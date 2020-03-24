@@ -34,7 +34,8 @@ bert_question = BertModel.from_pretrained(model_str)
 bert_paragraph = BertModel.from_pretrained(model_str)
 
 ## Dataloaders
-
+num_dat = 10
+batch_size = 5
 
 def process_natq_clean(file_path):
     ## if not exist save processed file
@@ -54,15 +55,15 @@ def generate_natq_clean_dataloaders():
                                                    return_tensors='pt'
                                                    )
     dataset = TensorDataset(
-        input_question['input_ids'].repeat(1, 1),
-        input_question['attention_mask'].repeat(1, 1),
-        input_question['token_type_ids'].repeat(1, 1),
-        inputs_paragraph['input_ids'].unsqueeze(0).repeat(1, 1, 1),
-        inputs_paragraph['attention_mask'].unsqueeze(0).repeat(1, 1, 1),
-        inputs_paragraph['token_type_ids'].unsqueeze(0).repeat(1, 1, 1)
+        input_question['input_ids'].repeat(num_dat, 1),
+        input_question['attention_mask'].repeat(num_dat, 1),
+        input_question['token_type_ids'].repeat(num_dat, 1),
+        inputs_paragraph['input_ids'].unsqueeze(0).repeat(num_dat, 1, 1),
+        inputs_paragraph['attention_mask'].unsqueeze(0).repeat(num_dat, 1, 1),
+        inputs_paragraph['token_type_ids'].unsqueeze(0).repeat(num_dat, 1, 1)
     )
 
-    return DataLoader(dataset), DataLoader(dataset)
+    return DataLoader(dataset, batch_size=batch_size), DataLoader(dataset, batch_size=batch_size)
 
 
 train_dataloader, dev_dataloader = generate_natq_clean_dataloaders()
@@ -177,33 +178,39 @@ class RetriverTrainer(pl.LightningModule):
         }
 
         h_question, h_paragraphs_batch = self(**inputs)
+        ## Todo: do dot product together in one pass with repeating questions --> faster
         h_paragraphs_pos = h_paragraphs_batch[:, 0, :]
         batch_h_paragraphs_negs = h_paragraphs_batch[:, 1:, :]
         pos_dot = torch.bmm(h_question.unsqueeze(1),
                   h_paragraphs_pos.unsqueeze(-1))
         neg_dot = torch.bmm(h_question.unsqueeze(1),
                                           batch_h_paragraphs_negs.permute(0, 2, 1))
-        pos_loss = F.logsigmoid(pos_dot).reshape(-1)
-        neg_loss = F.logsigmoid(neg_dot).sum(-1).reshape(-1)
-        loss = (pos_loss + neg_loss).sum()
+        pos_prob = F.sigmoid(pos_dot)
+        neg_prob = F.sigmoid(-1 * neg_dot)
+        all_prob = torch.cat([pos_prob, neg_prob], -1).squeeze(1)
 
-        return loss
+        pos_loss = torch.log(pos_prob).reshape(-1)
+        neg_loss = torch.log(neg_prob).sum(-1).reshape(-1)
+        loss = -1 * (pos_loss + neg_loss).sum()
+
+        return loss, all_prob
 
     def training_step(self, batch, batch_idx):
         """
         batch comes in the order of question, 1 positive paragraph,
-        2 negative paragraphs
+        K negative paragraphs
         """
 
-        train_loss = self.step_helper(batch)
+        train_loss, _ = self.step_helper(batch)
         # logs
         tensorboard_logs = {'train_loss': train_loss}
         return {'loss': train_loss, 'log': tensorboard_logs}
 
 
     def validation_step(self, batch, batch_idx):
-        loss = self.step_helper(batch)
-
+        loss, all_prob = self.step_helper(batch)
+        right_prob = torch.zeros_like(all_prob)
+        right_prob[:,0] = 1.
         ## Todo: create val_acc
         val_acc = loss / 2
 
