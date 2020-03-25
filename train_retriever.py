@@ -16,7 +16,6 @@ from copy import deepcopy
 import json
 import os
 from tqdm.auto import tqdm
-from collections import OrderedDict
 
 ## Berts
 model_str = 'bert-base-uncased'
@@ -25,8 +24,8 @@ bert_question = BertModel.from_pretrained(model_str)
 bert_paragraph = BertModel.from_pretrained(model_str)
 
 ## Hyperparams that wont likely change in the future
-num_dat_global = 500
-batch_size_global = 3
+num_dat_global = 100
+batch_size_global = 2
 max_question_len_global = 30
 max_paragraph_len_global = 512
 default_bert_emb_dim_global = 768
@@ -50,7 +49,8 @@ def remove_html_toks(s):
     return s
 
 def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_file, output_train_file = train_set_file_name,
-                       output_dev_file = dev_set_file_name):
+                       output_dev_file = dev_set_file_name, max_question_len = max_question_len_global,
+                       max_paragraph_len = max_paragraph_len_global):
     assert  folder_name[-1] == '/'
 
     if not os.path.exists(folder_name + input_file):
@@ -92,12 +92,12 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
                 paras = [remove_html_toks(i) for i in paras]
 
                 input_question = tokenizer.encode_plus(q, add_special_tokens=True,
-                                                       max_length=max_question_len_global, pad_to_max_length=True,
+                                                       max_length=max_question_len, pad_to_max_length=True,
                                                        return_tensors='pt')
                 inputs_paragraph = tokenizer.batch_encode_plus(paras,
                                                                add_special_tokens=True,
                                                                pad_to_max_length=True,
-                                                               max_length=max_paragraph_len_global,
+                                                               max_length=max_paragraph_len,
                                                                return_tensors='pt'
                                                                )
 
@@ -125,7 +125,7 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
             torch.cat(dev_batch_attention_mask_paragraphs),
             torch.cat(dev_batch_token_type_ids_paragraphs),
         )
-        torch.save(dev_set, 'dev_set.pt')
+        torch.save(dev_set, folder_name + output_dev_file)
 
     if not train_exists:
         train_set = TensorDataset(
@@ -137,31 +137,32 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
             torch.cat(train_batch_token_type_ids_paragraphs),
         )
 
-        torch.save(train_set, 'train_set.pt')
+        torch.save(train_set, folder_name + output_train_file)
 
 
 def generate_natq_clean_dataloaders(folder_path=data_folder_name, input_train_file=train_set_file_name,
         input_dev_file=dev_set_file_name, input_json_file = natq_json_file, batch_size = batch_size_global):
     assert  folder_path[-1] == '/'
 
-    if (not os.path.exists(data_folder_name + input_train_file)) or (not os.path.exists(data_folder_name + input_dev_file)):
-        process_natq_clean(data_folder_name, input_json_file, train_set_file_name, dev_set_file_name)
+    if (not os.path.exists(folder_path + input_train_file)) or (not os.path.exists(folder_path + input_dev_file)):
+        process_natq_clean(folder_path, input_json_file, input_train_file, input_dev_file)
 
-    train_set = torch.load(data_folder_name + input_train_file)
-    dev_set = torch.load(data_folder_name + input_dev_file)
+    train_set = torch.load(folder_path+ input_train_file)
+    dev_set = torch.load(folder_path + input_dev_file)
     return DataLoader(train_set, batch_size=batch_size), DataLoader(dev_set, batch_size=batch_size)
 
 
-def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_global):
+def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_global,
+                              max_question_len=max_question_len_global, max_paragraph_len=max_paragraph_len_global):
     ## convert things to data loaders
     txt = 'I am a question'
     input_question = tokenizer.encode_plus(txt, add_special_tokens=True,
-                                           max_length=max_question_len_global, pad_to_max_length=True,
+                                           max_length=max_question_len, pad_to_max_length=True,
                                            return_tensors='pt')
     inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative', 'I am negative super'],
                                                    add_special_tokens=True,
                                                    pad_to_max_length=True,
-                                                   max_length=max_paragraph_len_global,
+                                                   max_length=max_paragraph_len,
                                                    return_tensors='pt'
                                                    )
     dataset = TensorDataset(
@@ -181,9 +182,9 @@ def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_
         inputs_paragraph['attention_mask'].unsqueeze(0).repeat(num_dat, 1, 1),
         inputs_paragraph['token_type_ids'].unsqueeze(0).repeat(num_dat, 1, 1)
     )
-    
 
     return DataLoader(dataset, batch_size=batch_size), DataLoader(dataset_dev, batch_size=batch_size)
+
 
 
 train_dataloader, dev_dataloader = generate_fake_dataloaders()
@@ -281,18 +282,18 @@ class Retriver(nn.Module):
                 tmp_device = next(self.bert_paragraph_encoder.parameters()).device
                 inputs = {i:inputs[i].to(tmp_device) for i in inputs}
                 uncached_paragraph_array = self.bert_paragraph_encoder(
-                    inputs['input_ids'], inputs['attention_mask'], inputs['token_type_ids']
+                    **inputs
                 ).detach().cpu().numpy()
                 for ind, i in enumerate(uncached_paragraph_array):
                     self.cache_hash2array[uncached_hashes[ind]] = deepcopy(i)
                     batch_paragraph_array[ind,:] = deepcopy(i)
             inputs = self.tokenizer.encode_plus(question_str, add_special_tokens=True,
-                   max_length=max_question_len_global, pad_to_max_length=True,
+                   max_length=self.max_question_len, pad_to_max_length=True,
                    return_tensors='pt')
             tmp_device = next(self.bert_question_encoder.parameters()).device
             inputs = {i:inputs[i].to(tmp_device) for i in inputs}
             question_array = self.bert_question_encoder(
-                inputs['input_ids'], inputs['attention_mask'], inputs['token_type_ids']
+                **inputs
             )
             relevance_scores = torch.sigmoid(
                 torch.mm(torch.tensor(batch_paragraph_array, dtype=question_array.dtype).to(question_array.device),
@@ -311,27 +312,24 @@ class RetriverTrainer(pl.LightningModule):
         self.retriever = retriever
         self.emb_dim = emb_dim
 
-    #def prepare_data(self):
-     #   train_dataloader, dev_dataloader = generate_fake_dataloaders()
-     #   self.train_dataloader = train_dataloader
-     #   self.dev_dataloader = dev_dataloader
-
-    def forward(self,input_ids_question, attention_mask_question, token_type_ids_question,
-                                     batch_input_ids_paragraphs, batch_attention_mask_paragraphs,
-                                                              batch_token_type_ids_paragraphs):
-        return self.retriever(input_ids_question, attention_mask_question, token_type_ids_question,
-                                         batch_input_ids_paragraphs, batch_attention_mask_paragraphs,
-                                                                  batch_token_type_ids_paragraphs)
+    def forward(self, **kwargs):
+        return self.retriever(**kwargs)
 
     def step_helper(self, batch):
         input_ids_question, attention_mask_question, token_type_ids_question, \
         batch_input_ids_paragraphs, batch_attention_mask_paragraphs, \
         batch_token_type_ids_paragraphs = batch
-        
-        h_question, h_paragraphs_batch = self.retriever(input_ids_question, attention_mask_question, token_type_ids_question,
-                                     batch_input_ids_paragraphs, batch_attention_mask_paragraphs,
-                                                              batch_token_type_ids_paragraphs
-        )
+
+        inputs = {
+            'input_ids_question': input_ids_question,
+            'attention_mask_question': attention_mask_question,
+            'token_type_ids_question': token_type_ids_question,
+            'batch_input_ids_paragraphs': batch_input_ids_paragraphs,
+            'batch_attention_mask_paragraphs': batch_attention_mask_paragraphs,
+            'batch_token_type_ids_paragraphs': batch_token_type_ids_paragraphs
+        }
+
+        h_question, h_paragraphs_batch = self(**inputs)
         batch_size, num_document, emb_dim = batch_input_ids_paragraphs.size()
 
         all_dots = torch.bmm(h_question.repeat(num_document, 1).unsqueeze(1),
@@ -399,7 +397,7 @@ if __name__ == '__main__':
     ret = Retriver(encoder_question, encoder_paragarph, tokenizer)
 
     checkpoint_callback = ModelCheckpoint(
-        filepath='out/{epoch}-{val_loss}.ckpt',
+        filepath='out/{epoch}-{val_loss:.2f}-{val_acc:.2f}',
         save_top_k=1,
         verbose=True,
         monitor='val_acc',
@@ -409,7 +407,7 @@ if __name__ == '__main__':
     early_stopping = EarlyStopping('val_acc', mode='max')
 
     trainer = pl.Trainer(
-        gpus=8,
+        gpus=2,
         distributed_backend='ddp',
         val_check_interval=0.1,
         min_epochs=1, max_epochs=10,
