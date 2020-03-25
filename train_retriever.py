@@ -363,9 +363,12 @@ class RetriverTrainer(pl.LightningModule):
 
 
     def validation_epoch_end(self, outputs):
-        avg_val_loss = torch.stack([x['val_loss'] for x in outputs]).sum() / len(outputs)
-        avg_val_acc = torch.stack([x['val_acc'] for x in outputs]).sum() / len(outputs)
-
+        try:
+            avg_val_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+            avg_val_acc = torch.stack([x['val_acc'] for x in outputs]).double().mean()
+        except:
+            avg_val_loss = torch.cat([x['val_loss'] for x in outputs], 0).mean()
+            avg_val_acc = torch.cat([x['val_acc'] for x in outputs], 0).double().mean()
 
         tqdm_dict = {'val_acc': avg_val_acc, 'val_loss': avg_val_loss}
 
@@ -386,28 +389,34 @@ class RetriverTrainer(pl.LightningModule):
     def val_dataloader(self):
         return dev_dataloader
 
-    #def on_post_performance_check(self):
-     #   print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
-      #                                             'apple is tasty',
-       #                                            'He is a handsome boy'], True))
+    def on_post_performance_check(self):
+       print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
+                                                  'apple is tasty',
+                                                  'He is a handsome boy'], True))
 
 if __name__ == '__main__':
     encoder_question = BertEncoder(bert_question, max_question_len_global)
     encoder_paragarph = BertEncoder(bert_paragraph, max_paragraph_len_global)
     ret = Retriver(encoder_question, encoder_paragarph, tokenizer)
 
+    checkpoint_callback = ModelCheckpoint(
+        filepath='{epoch}-{val_loss:.2f}-{val_acc:.2f}',
+        save_top_k=1,
+        verbose=True,
+        monitor='val_acc',
+        mode='max'
+    )
+
+    early_stopping = EarlyStopping('val_acc', mode='max')
 
     trainer = pl.Trainer(
         gpus=2,
         distributed_backend='dp',
+        val_check_interval=0.1,
         min_epochs=1, max_epochs=10,
-    )
+        checkpoint_callback=checkpoint_callback,
+        early_stop_callback=early_stopping)
 
     ret_trainee = RetriverTrainer(ret)
 
     trainer.fit(ret_trainee)
-
-    # reranked_paragraphs, reranked_relevance_scores, rerank_index = ret.predict('I am beautiful lady?', ['You are a pretty girl',
-    #                                                                                                'apple is tasty',
-    #                                                                                                'He is a handsome boy'])
-    # print(reranked_paragraphs, reranked_relevance_scores, rerank_index)
