@@ -13,6 +13,9 @@ from sklearn.metrics import accuracy_score
 import torch.nn.functional as F
 import numpy as np
 from copy import deepcopy
+import json
+import os
+from tqdm.auto import tqdm
 
 ## Berts
 model_str = 'bert-base-uncased'
@@ -20,25 +23,141 @@ tokenizer = BertTokenizer.from_pretrained(model_str)
 bert_question = BertModel.from_pretrained(model_str)
 bert_paragraph = BertModel.from_pretrained(model_str)
 
-## Dataloaders
-num_dat = 10
-batch_size = 2
+## Hyperparams that wont likely change in the future
+num_dat_global = 10
+batch_size_global = 2
 max_question_len_global = 30
 max_paragraph_len_global = 30
 default_bert_emb_dim_global = 768
+train_set_file_name = 'natq_train.pt'
+dev_set_file_name = 'natq_dev.pt'
+natq_json_file = 'natq_clean.json'
+data_folder_name = 'natq/'
+assert  data_folder_name[-1] == '/'
 
-def process_natq_clean(file_path):
-    ## if not exist save processed file
-    pass
+def remove_html_toks(s):
+    html_toks = [
+        '<P>',
+        '</P>',
+        '<H1>',
+        '</H1>',
+        '</H2>',
+        '</H2>',
+    ]
+    for i in html_toks:
+        s = s.replace(i, '')
+    return s
+
+def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_file, output_train_file = train_set_file_name,
+                       output_dev_file = dev_set_file_name):
+    assert  folder_name[-1] == '/'
+
+    if not os.path.exists(folder_name + input_file):
+        raise Exception('{} not found in {}'.format(input_file, folder_name))
+
+    train_exists = False
+    dev_exists = False
+
+    if os.path.exists(folder_name + output_train_file):
+        train_exists = True
+    if os.path.exists(folder_name + output_dev_file):
+        dev_exists = True
+
+    if train_exists and dev_exists:
+        return
+
+    if not train_exists:
+        train_input_ids_question, train_attention_mask_question, train_token_type_ids_question, \
+        train_batch_input_ids_paragraphs, train_batch_attention_mask_paragraphs, \
+        train_batch_token_type_ids_paragraphs = [], [], [], [], [], []
+    if not dev_exists:
+        dev_input_ids_question, dev_attention_mask_question, dev_token_type_ids_question, \
+        dev_batch_input_ids_paragraphs, dev_batch_attention_mask_paragraphs, \
+        dev_batch_token_type_ids_paragraphs = [], [], [], [], [], []
+
+    with open(folder_name + input_file, 'r', encoding='utf-8', errors='ignore') as f:
+        for l in tqdm(f):
+            d = json.loads(l)
+
+            if d['num_positives'] >= 1 and d['num_negatives'] >= 2:
+
+                if d['dataset'] == 'train' and train_exists:
+                    continue
+                if d['dataset'] == 'dev' and dev_exists:
+                    continue
+
+                q = d['question']
+                paras = d['right_paragraphs'][:1] + d['wrong_paragraphs'][:2]
+                paras = [remove_html_toks(i) for i in paras]
+
+                input_question = tokenizer.encode_plus(q, add_special_tokens=True,
+                                                       max_length=max_question_len_global, pad_to_max_length=True,
+                                                       return_tensors='pt')
+                inputs_paragraph = tokenizer.batch_encode_plus(paras,
+                                                               add_special_tokens=True,
+                                                               pad_to_max_length=True,
+                                                               max_length=max_paragraph_len_global,
+                                                               return_tensors='pt'
+                                                               )
+
+                if d['dataset'] == 'train':
+                    train_input_ids_question.append(input_question['input_ids'])
+                    train_attention_mask_question.append(input_question['attention_mask'])
+                    train_token_type_ids_question.append(input_question['token_type_ids'])
+                    train_batch_input_ids_paragraphs.append(inputs_paragraph['input_ids'].unsqueeze(0))
+                    train_batch_attention_mask_paragraphs.append(inputs_paragraph['attention_mask'].unsqueeze(0))
+                    train_batch_token_type_ids_paragraphs.append(inputs_paragraph['token_type_ids'].unsqueeze(0))
+
+                elif d['dataset'] == 'dev':
+                    dev_input_ids_question.append(input_question['input_ids'])
+                    dev_attention_mask_question.append(input_question['attention_mask'])
+                    dev_token_type_ids_question.append(input_question['token_type_ids'])
+                    dev_batch_input_ids_paragraphs.append(inputs_paragraph['input_ids'].unsqueeze(0))
+                    dev_batch_attention_mask_paragraphs.append(inputs_paragraph['attention_mask'].unsqueeze(0))
+                    dev_batch_token_type_ids_paragraphs.append(inputs_paragraph['token_type_ids'].unsqueeze(0))
+    if not dev_exists:
+        dev_set = TensorDataset(
+            torch.cat(dev_input_ids_question),
+            torch.cat(dev_attention_mask_question),
+            torch.cat(dev_token_type_ids_question),
+            torch.cat(dev_batch_input_ids_paragraphs),
+            torch.cat(dev_batch_attention_mask_paragraphs),
+            torch.cat(dev_batch_token_type_ids_paragraphs),
+        )
+        torch.save(dev_set, 'dev_set.pt')
+
+    if not train_exists:
+        train_set = TensorDataset(
+            torch.cat(train_input_ids_question),
+            torch.cat(train_attention_mask_question),
+            torch.cat(train_token_type_ids_question),
+            torch.cat(train_batch_input_ids_paragraphs),
+            torch.cat(train_batch_attention_mask_paragraphs),
+            torch.cat(train_batch_token_type_ids_paragraphs),
+        )
+
+        torch.save(train_set, 'train_set.pt')
 
 
-def generate_natq_clean_dataloaders():
+def generate_natq_clean_dataloaders(folder_path=data_folder_name, input_train_file=train_set_file_name,
+        input_dev_file=dev_set_file_name, input_json_file = natq_json_file, batch_size = batch_size_global):
+    assert  folder_path[-1] == '/'
+
+    if (not os.path.exists(data_folder_name + input_train_file)) or (not os.path.exists(data_folder_name + input_dev_file)):
+        process_natq_clean(data_folder_name, input_json_file, train_set_file_name, dev_set_file_name)
+
+    train_set = torch.load(data_folder_name + input_train_file)
+    dev_set = torch.load(data_folder_name + input_dev_file)
+    return DataLoader(train_set, batch_size=batch_size), DataLoader(dev_set, batch_size=batch_size)
+
+
+def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_global):
     ## convert things to data loaders
     txt = 'I am a question'
     input_question = tokenizer.encode_plus(txt, add_special_tokens=True,
                                            max_length=max_question_len_global, pad_to_max_length=True,
                                            return_tensors='pt')
-    inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative'],
+    inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative', 'I am negative super'],
                                                    add_special_tokens=True,
                                                    pad_to_max_length=True,
                                                    max_length=max_paragraph_len_global,
@@ -65,7 +184,6 @@ def generate_natq_clean_dataloaders():
     return DataLoader(dataset, batch_size=batch_size), DataLoader(dataset_dev, batch_size=batch_size)
 
 
-train_dataloader, dev_dataloader = generate_natq_clean_dataloaders()
 
 ## nn.Module classes
 
@@ -190,6 +308,11 @@ class RetriverTrainer(pl.LightningModule):
         self.retriever = retriever
         self.emb_dim = emb_dim
 
+    def prepare_data(self):
+        train_dataloader, dev_dataloader = generate_natq_clean_dataloaders()
+        self.train_dataloader = train_dataloader
+        self.dev_dataloader = dev_dataloader
+
     def forward(self, **kwargs):
         return self.retriever(**kwargs)
 
@@ -210,8 +333,8 @@ class RetriverTrainer(pl.LightningModule):
         h_question, h_paragraphs_batch = self(**inputs)
         batch_size, num_document, emb_dim = batch_input_ids_paragraphs.size()
 
-        all_dots = torch.bmm(h_question.repeat(3, 1).unsqueeze(1),
-            h_paragraphs_batch.reshape(-1, 768).unsqueeze(2)).reshape(batch_size, num_document)
+        all_dots = torch.bmm(h_question.repeat(num_document, 1).unsqueeze(1),
+            h_paragraphs_batch.reshape(-1, self.emb_dim).unsqueeze(2)).reshape(batch_size, num_document)
         all_prob = torch.sigmoid(all_dots)
 
         pos_loss = - torch.log(all_prob[:, 0]).sum()
@@ -259,10 +382,10 @@ class RetriverTrainer(pl.LightningModule):
         return torch.optim.AdamW([p for p in self.parameters() if p.requires_grad])
 
     def train_dataloader(self):
-        return train_dataloader
+        return self.train_dataloader
 
     def val_dataloader(self):
-        return dev_dataloader
+        return self.dev_dataloader
 
     def on_post_performance_check(self):
         print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
