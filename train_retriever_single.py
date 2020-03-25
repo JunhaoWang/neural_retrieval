@@ -398,8 +398,8 @@ if __name__ == '__main__':
 
 
     trainer = pl.Trainer(
-        gpus=2,
-        distributed_backend='dp',
+        gpus=1,
+        # distributed_backend='ddp',
         min_epochs=1, max_epochs=10,
     )
 
