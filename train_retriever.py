@@ -140,7 +140,7 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
         torch.save(train_set, folder_name + output_train_file)
 
 
-def generate_natq_clean_dataloaders(folder_path=data_folder_name, input_train_file=train_set_file_name,
+def generate_natq_dataloaders(folder_path=data_folder_name, input_train_file=train_set_file_name,
         input_dev_file=dev_set_file_name, input_json_file = natq_json_file, batch_size = batch_size_global):
     assert  folder_path[-1] == '/'
 
@@ -187,7 +187,7 @@ def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_
 
 
 
-train_dataloader, dev_dataloader = generate_fake_dataloaders()
+train_dataloader, dev_dataloader = generate_natq_dataloaders()
 
 ## nn.Module classes
 
@@ -413,7 +413,7 @@ if __name__ == '__main__':
         gpus=2,
         distributed_backend='dp',
         val_check_interval=0.1,
-        min_epochs=1, max_epochs=10,
+        min_epochs=1,
         checkpoint_callback=checkpoint_callback,
         early_stop_callback=early_stopping)
 
