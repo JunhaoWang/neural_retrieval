@@ -128,7 +128,11 @@ class Retriver(nn.Module):
     def str2hash(drlf, str):
         return hashlib.sha224(str.encode('utf-8')).hexdigest()
 
-    def predict(self, question_str: str, batch_paragraph_strs: List[str]):
+    def refresh_cache(self):
+        self.cache_hash2array = {}
+        self.cache_hash2str = {}
+
+    def predict(self, question_str: str, batch_paragraph_strs: List[str], refresh_cache = False):
         self.eval()
         with torch.no_grad():
             ## Todo: embed all unique docs, then create ranking for all questions, then find overlap with constrained ranking
@@ -145,29 +149,38 @@ class Retriver(nn.Module):
                     uncached_paragraphs.append(i)
                     uncached_hashes.append(hash)
                     self.cache_hash2str[hash] = i
-            uncached_paragraph_array = self.bert_paragraph_encoder(
-                **self.tokenizer.batch_encode_plus(uncached_paragraphs,
-                     add_special_tokens=True,
-                     pad_to_max_length=True,
-                     max_length=self.max_paragraph_len,
-                     return_tensors='pt'
-                 )
-            ).detach().numpy()
-            for ind, i in enumerate(uncached_paragraph_array):
-                self.cache_hash2array[uncached_hashes[ind]] = deepcopy(i)
-                batch_paragraph_array[ind,:] = deepcopy(i)
-
+            inputs = self.tokenizer.batch_encode_plus(
+                uncached_paragraphs,
+                 add_special_tokens=True,
+                 pad_to_max_length=True,
+                 max_length=self.max_paragraph_len,
+                 return_tensors='pt'
+             )
+            if len(inputs):
+                tmp_device = next(self.bert_paragraph_encoder.parameters()).device
+                inputs = {i:inputs[i].to(tmp_device) for i in inputs}
+                uncached_paragraph_array = self.bert_paragraph_encoder(
+                    **inputs
+                ).detach().cpu().numpy()
+                for ind, i in enumerate(uncached_paragraph_array):
+                    self.cache_hash2array[uncached_hashes[ind]] = deepcopy(i)
+                    batch_paragraph_array[ind,:] = deepcopy(i)
+            inputs = self.tokenizer.encode_plus(question_str, add_special_tokens=True,
+                   max_length=max_question_len_global, pad_to_max_length=True,
+                   return_tensors='pt')
+            tmp_device = next(self.bert_question_encoder.parameters()).device
+            inputs = {i:inputs[i].to(tmp_device) for i in inputs}
             question_array = self.bert_question_encoder(
-                **self.tokenizer.encode_plus(question_str, add_special_tokens=True,
-                                               max_length=max_question_len_global, pad_to_max_length=True,
-                                               return_tensors='pt'))
+                **inputs
+            )
             relevance_scores = torch.sigmoid(
-                torch.mm(torch.tensor(batch_paragraph_array, dtype=question_array.dtype), question_array.T)).reshape(-1)
+                torch.mm(torch.tensor(batch_paragraph_array, dtype=question_array.dtype).to(question_array.device),
+                         question_array.T)).reshape(-1)
             rerank_index = torch.argsort(-relevance_scores)
-            relevance_scores_numpy = relevance_scores.detach().numpy()
-            rerank_index_numpy = rerank_index.detach().numpy()
+            relevance_scores_numpy = relevance_scores.detach().cpu().numpy()
+            rerank_index_numpy = rerank_index.detach().cpu().numpy()
             reranked_paragraphs = [batch_paragraph_strs[i] for i in rerank_index_numpy]
-            reranked_relevance_scores = relevance_scores_numpy[rerank_index]
+            reranked_relevance_scores = relevance_scores_numpy[rerank_index_numpy]
             return reranked_paragraphs, reranked_relevance_scores, rerank_index_numpy
 
 class RetriverTrainer(pl.LightningModule):
@@ -250,6 +263,11 @@ class RetriverTrainer(pl.LightningModule):
 
     def val_dataloader(self):
         return dev_dataloader
+
+    def on_post_performance_check(self):
+        print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
+                                                   'apple is tasty',
+                                                   'He is a handsome boy'], True))
 
 if __name__ == '__main__':
     encoder_question = BertEncoder(bert_question, max_question_len_global)
