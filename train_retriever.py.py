@@ -27,7 +27,7 @@ bert_paragraph = BertModel.from_pretrained(model_str)
 num_dat_global = 10
 batch_size_global = 2
 max_question_len_global = 30
-max_paragraph_len_global = 30
+max_paragraph_len_global = 512
 default_bert_emb_dim_global = 768
 train_set_file_name = 'natq_train.pt'
 dev_set_file_name = 'natq_dev.pt'
@@ -49,7 +49,8 @@ def remove_html_toks(s):
     return s
 
 def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_file, output_train_file = train_set_file_name,
-                       output_dev_file = dev_set_file_name):
+                       output_dev_file = dev_set_file_name, max_question_len = max_question_len_global,
+                       max_paragraph_len = max_paragraph_len_global):
     assert  folder_name[-1] == '/'
 
     if not os.path.exists(folder_name + input_file):
@@ -91,12 +92,12 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
                 paras = [remove_html_toks(i) for i in paras]
 
                 input_question = tokenizer.encode_plus(q, add_special_tokens=True,
-                                                       max_length=max_question_len_global, pad_to_max_length=True,
+                                                       max_length=max_question_len, pad_to_max_length=True,
                                                        return_tensors='pt')
                 inputs_paragraph = tokenizer.batch_encode_plus(paras,
                                                                add_special_tokens=True,
                                                                pad_to_max_length=True,
-                                                               max_length=max_paragraph_len_global,
+                                                               max_length=max_paragraph_len,
                                                                return_tensors='pt'
                                                                )
 
@@ -124,7 +125,7 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
             torch.cat(dev_batch_attention_mask_paragraphs),
             torch.cat(dev_batch_token_type_ids_paragraphs),
         )
-        torch.save(dev_set, 'dev_set.pt')
+        torch.save(dev_set, folder_name + output_dev_file)
 
     if not train_exists:
         train_set = TensorDataset(
@@ -136,31 +137,32 @@ def process_natq_clean(folder_name = data_folder_name, input_file = natq_json_fi
             torch.cat(train_batch_token_type_ids_paragraphs),
         )
 
-        torch.save(train_set, 'train_set.pt')
+        torch.save(train_set, folder_name + output_train_file)
 
 
 def generate_natq_clean_dataloaders(folder_path=data_folder_name, input_train_file=train_set_file_name,
         input_dev_file=dev_set_file_name, input_json_file = natq_json_file, batch_size = batch_size_global):
     assert  folder_path[-1] == '/'
 
-    if (not os.path.exists(data_folder_name + input_train_file)) or (not os.path.exists(data_folder_name + input_dev_file)):
-        process_natq_clean(data_folder_name, input_json_file, train_set_file_name, dev_set_file_name)
+    if (not os.path.exists(folder_path + input_train_file)) or (not os.path.exists(folder_path + input_dev_file)):
+        process_natq_clean(folder_path, input_json_file, input_train_file, input_dev_file)
 
-    train_set = torch.load(data_folder_name + input_train_file)
-    dev_set = torch.load(data_folder_name + input_dev_file)
+    train_set = torch.load(folder_path+ input_train_file)
+    dev_set = torch.load(folder_path + input_dev_file)
     return DataLoader(train_set, batch_size=batch_size), DataLoader(dev_set, batch_size=batch_size)
 
 
-def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_global):
+def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_global,
+                              max_question_len=max_question_len_global, max_paragraph_len=max_paragraph_len_global):
     ## convert things to data loaders
     txt = 'I am a question'
     input_question = tokenizer.encode_plus(txt, add_special_tokens=True,
-                                           max_length=max_question_len_global, pad_to_max_length=True,
+                                           max_length=max_question_len, pad_to_max_length=True,
                                            return_tensors='pt')
     inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative', 'I am negative super'],
                                                    add_special_tokens=True,
                                                    pad_to_max_length=True,
-                                                   max_length=max_paragraph_len_global,
+                                                   max_length=max_paragraph_len,
                                                    return_tensors='pt'
                                                    )
     dataset = TensorDataset(
@@ -284,7 +286,7 @@ class Retriver(nn.Module):
                     self.cache_hash2array[uncached_hashes[ind]] = deepcopy(i)
                     batch_paragraph_array[ind,:] = deepcopy(i)
             inputs = self.tokenizer.encode_plus(question_str, add_special_tokens=True,
-                   max_length=max_question_len_global, pad_to_max_length=True,
+                   max_length=self.max_question_len, pad_to_max_length=True,
                    return_tensors='pt')
             tmp_device = next(self.bert_question_encoder.parameters()).device
             inputs = {i:inputs[i].to(tmp_device) for i in inputs}
