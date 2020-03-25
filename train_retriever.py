@@ -389,18 +389,18 @@ class RetriverTrainer(pl.LightningModule):
     def val_dataloader(self):
         return dev_dataloader
 
-    def on_post_performance_check(self):
-       print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
-                                                  'apple is tasty',
-                                                  'He is a handsome boy'], True))
+    # def on_post_performance_check(self):
+    #    print(self.retriever.predict('I am beautiful lady?', ['You are a pretty girl',
+    #                                               'apple is tasty',
+    #                                               'He is a handsome boy'], True))
 
 if __name__ == '__main__':
     encoder_question = BertEncoder(bert_question, max_question_len_global)
     encoder_paragarph = BertEncoder(bert_paragraph, max_paragraph_len_global)
     ret = Retriver(encoder_question, encoder_paragarph, tokenizer)
-
+    os.makedirs('out', exist_ok=True)
     checkpoint_callback = ModelCheckpoint(
-        filepath='{epoch}-{val_loss:.2f}-{val_acc:.2f}',
+        filepath='out/{epoch}-{val_loss:.2f}-{val_acc:.2f}',
         save_top_k=1,
         verbose=True,
         monitor='val_acc',
