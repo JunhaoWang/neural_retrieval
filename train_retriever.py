@@ -399,7 +399,7 @@ if __name__ == '__main__':
     ret = Retriver(encoder_question, encoder_paragarph, tokenizer)
 
     checkpoint_callback = ModelCheckpoint(
-        filepath='out/{epoch}-{val_loss}.ckpt',
+        filepath='out/{epoch}-{val_loss}_{val_acc}.ckpt',
         save_top_k=1,
         verbose=True,
         monitor='val_acc',
