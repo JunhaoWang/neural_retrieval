@@ -25,7 +25,7 @@ bert_paragraph = BertModel.from_pretrained(model_str)
 
 ## Hyperparams that wont likely change in the future
 num_dat_global = 100
-batch_size_global = 3
+batch_size_global = 1
 max_question_len_global = 30
 max_paragraph_len_global = 512
 default_bert_emb_dim_global = 768
@@ -159,7 +159,7 @@ def generate_fake_dataloaders(num_dat = num_dat_global, batch_size = batch_size_
     input_question = tokenizer.encode_plus(txt, add_special_tokens=True,
                                            max_length=max_question_len, pad_to_max_length=True,
                                            return_tensors='pt')
-    inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative', 'I am negative super'],
+    inputs_paragraph = tokenizer.batch_encode_plus(['I am positve' * 3, 'I am negative' * 4, 'I am negative'],
                                                    add_special_tokens=True,
                                                    pad_to_max_length=True,
                                                    max_length=max_paragraph_len,
@@ -315,31 +315,31 @@ class RetriverTrainer(pl.LightningModule):
     def forward(self, **kwargs):
         return self.retriever(**kwargs)
 
-    def step_helper(self, batch):
-        input_ids_question, attention_mask_question, token_type_ids_question, \
-        batch_input_ids_paragraphs, batch_attention_mask_paragraphs, \
-        batch_token_type_ids_paragraphs = batch
-
-        inputs = {
-            'input_ids_question': input_ids_question,
-            'attention_mask_question': attention_mask_question,
-            'token_type_ids_question': token_type_ids_question,
-            'batch_input_ids_paragraphs': batch_input_ids_paragraphs,
-            'batch_attention_mask_paragraphs': batch_attention_mask_paragraphs,
-            'batch_token_type_ids_paragraphs': batch_token_type_ids_paragraphs
-        }
-
-        h_question, h_paragraphs_batch = self(**inputs)
-        batch_size, num_document, emb_dim = batch_input_ids_paragraphs.size()
-
-        all_dots = torch.bmm(h_question.repeat(num_document, 1).unsqueeze(1),
-            h_paragraphs_batch.reshape(-1, self.emb_dim).unsqueeze(2)).reshape(batch_size, num_document)
-        all_prob = torch.sigmoid(all_dots)
-
-        pos_loss = - torch.log(all_prob[:, 0]).sum()
-        neg_loss = - torch.log(1 - all_prob[:, 1:]).sum()
-        loss = pos_loss + neg_loss
-        return loss, all_prob
+    # def step_helper(self, batch):
+    #     input_ids_question, attention_mask_question, token_type_ids_question, \
+    #     batch_input_ids_paragraphs, batch_attention_mask_paragraphs, \
+    #     batch_token_type_ids_paragraphs = batch
+    #
+    #     inputs = {
+    #         'input_ids_question': input_ids_question,
+    #         'attention_mask_question': attention_mask_question,
+    #         'token_type_ids_question': token_type_ids_question,
+    #         'batch_input_ids_paragraphs': batch_input_ids_paragraphs,
+    #         'batch_attention_mask_paragraphs': batch_attention_mask_paragraphs,
+    #         'batch_token_type_ids_paragraphs': batch_token_type_ids_paragraphs
+    #     }
+    #
+    #     h_question, h_paragraphs_batch = self(**inputs)
+    #     batch_size, num_document, emb_dim = batch_input_ids_paragraphs.size()
+    #
+    #     all_dots = torch.bmm(h_question.repeat(num_document, 1).unsqueeze(1),
+    #         h_paragraphs_batch.reshape(-1, self.emb_dim).unsqueeze(2)).reshape(batch_size, num_document)
+    #     all_prob = torch.sigmoid(all_dots)
+    #
+    #     pos_loss = - torch.log(all_prob[:, 0]).sum()
+    #     neg_loss = - torch.log(1 - all_prob[:, 1:]).sum()
+    #     loss = pos_loss + neg_loss
+    #     return loss, all_prob
 
     def step_helper_classification(self, batch):
         input_ids_question, attention_mask_question, token_type_ids_question, \
@@ -360,11 +360,12 @@ class RetriverTrainer(pl.LightningModule):
 
         all_dots = torch.bmm(h_question.repeat(num_document, 1).unsqueeze(1),
             h_paragraphs_batch.reshape(-1, self.emb_dim).unsqueeze(2)).reshape(batch_size, num_document)
+        logits = all_dots
         all_prob = torch.sigmoid(all_dots)
 
-        pos_loss = - torch.log(all_prob[:, 0]).sum()
-        neg_loss = - torch.log(1 - all_prob[:, 1:]).sum()
-        loss = pos_loss + neg_loss
+        loss = nn.CrossEntropyLoss()(
+            logits, torch.zeros(logits.size()[0],dtype=torch.long).to(logits.device)
+        )
         return loss, all_prob
 
     def training_step(self, batch, batch_idx):
@@ -373,14 +374,14 @@ class RetriverTrainer(pl.LightningModule):
         K negative paragraphs
         """
 
-        train_loss, _ = self.step_helper(batch)
+        train_loss, _ = self.step_helper_classification(batch)
         # logs
         tensorboard_logs = {'train_loss': train_loss}
         return {'loss': train_loss, 'log': tensorboard_logs}
 
 
     def validation_step(self, batch, batch_idx):
-        loss, all_prob = self.step_helper(batch)
+        loss, all_prob = self.step_helper_classification(batch)
         batch_size = all_prob.size()[0]
         _, y_hat = torch.max(all_prob, 1)
         y_true = torch.zeros(batch_size, dtype=y_hat.dtype).type_as(y_hat)
@@ -437,7 +438,7 @@ if __name__ == '__main__':
 
     trainer = pl.Trainer(
         gpus=1,
-        distributed_backend='dp',
+        # distributed_backend='dp',
         val_check_interval=0.1,
         min_epochs=1,
         checkpoint_callback=checkpoint_callback,
